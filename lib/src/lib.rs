@@ -1126,6 +1126,26 @@ base = "app"
     }
 
     #[test]
+    fn serde_default_hashmap_without_toml_default_as_empty_table() {
+        #[derive(TomlExample, Deserialize, PartialEq, Debug)]
+        struct Config {
+            #[serde(default)]
+            pub db_alias: HashMap<String, String>,
+        }
+
+        let example = Config::toml_example();
+        assert_eq!(
+            example,
+            r#"[db_alias]
+
+"#
+        );
+
+        let config = toml::from_str::<Config>(&example).unwrap();
+        assert!(config.db_alias.is_empty());
+    }
+
+    #[test]
     fn optional_hashmap_default_as_commented_table() {
         #[derive(TomlExample)]
         #[allow(dead_code)]

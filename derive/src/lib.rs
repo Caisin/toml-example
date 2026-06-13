@@ -444,10 +444,12 @@ fn parse_field(
     );
     let explicit_default = matches!(default_source, Some(DefaultSource::DefaultValue(_)));
     let default = match default_source {
+        _ if matches!(kind, FieldKind::Map { .. }) && !explicit_default => {
+            DefaultSource::DefaultValue(default_value)
+        }
         Some(DefaultSource::DefaultFn(_)) => DefaultSource::DefaultFn(ty.clone()),
         Some(DefaultSource::SerdeDefaultFn(f)) => DefaultSource::SerdeDefaultFn(f),
         Some(DefaultSource::DefaultValue(v)) => DefaultSource::DefaultValue(v),
-        _ if matches!(kind, FieldKind::Map { .. }) => DefaultSource::DefaultValue(default_value),
         _ if struct_default.is_some() => DefaultSource::DefaultFn(None),
         _ => DefaultSource::DefaultValue(default_value),
     };
