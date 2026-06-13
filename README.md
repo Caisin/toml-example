@@ -171,7 +171,7 @@ This works with maps too!
 #[derive(TomlExample, Deserialize)]
 struct MainConfig {
     #[serde(flatten)]
-    #[toml_example(nesting)]
+    #[toml_example(default = example, nesting)]
     nested: HashMap<String, ConfigItem>,
 }
 #[derive(TomlExample, Deserialize)]

@@ -40,6 +40,7 @@ struct AttrMeta {
 struct ParsedField {
     docs: Vec<String>,
     default: DefaultSource,
+    explicit_default: bool,
     kind: FieldKind,
     nesting_format: Option<NestingFormat>,
     skip: bool,
@@ -57,13 +58,19 @@ impl ParsedField {
 
     // Provide a default key for map-like example
     fn default_key(&self) -> String {
-        if let DefaultSource::DefaultValue(v) = &self.default {
-            let key = v.trim_matches('\"').replace(' ', "").replace('.', "-");
-            if !key.is_empty() {
-                return key;
+        if self.explicit_default {
+            if let DefaultSource::DefaultValue(v) = &self.default {
+                let key = v.trim_matches('\"').replace(' ', "").replace('.', "-");
+                if !key.is_empty() {
+                    return key;
+                }
             }
         }
         "example".into()
+    }
+
+    fn has_explicit_default_value(&self) -> bool {
+        self.explicit_default && matches!(self.default, DefaultSource::DefaultValue(_))
     }
 
     fn label(&self) -> String {
@@ -435,10 +442,12 @@ fn parse_field(
         &mut nesting_format,
         &mut kind,
     );
+    let explicit_default = matches!(default_source, Some(DefaultSource::DefaultValue(_)));
     let default = match default_source {
         Some(DefaultSource::DefaultFn(_)) => DefaultSource::DefaultFn(ty.clone()),
         Some(DefaultSource::SerdeDefaultFn(f)) => DefaultSource::SerdeDefaultFn(f),
         Some(DefaultSource::DefaultValue(v)) => DefaultSource::DefaultValue(v),
+        _ if matches!(kind, FieldKind::Map { .. }) => DefaultSource::DefaultValue(default_value),
         _ if struct_default.is_some() => DefaultSource::DefaultFn(None),
         _ => DefaultSource::DefaultValue(default_value),
     };
@@ -453,6 +462,7 @@ fn parse_field(
     ParsedField {
         docs,
         default,
+        explicit_default,
         kind,
         nesting_format,
         skip,
@@ -697,7 +707,24 @@ impl Intermediate {
                     continue;
                 }
 
-                if field.nesting_format.is_some() {
+                if matches!(
+                    field.nesting_format,
+                    Some(NestingFormat::Section(NestingType::Dict))
+                ) && !field.has_explicit_default_value()
+                {
+                    if !field.flatten {
+                        field.push_doc_to_string(&mut nesting_field_example);
+                        nesting_field_example.push_str("\"##.to_string()");
+                        nesting_field_example.push_str(&format!(
+                            " + &toml_example::format_table_example(\
+                                label, prefix, \"{}\", \"\", {}\
+                            )",
+                            field.name.trim_start_matches("r#"),
+                            field.optional
+                        ));
+                        nesting_field_example.push_str(" + &r##\"");
+                    }
+                } else if field.nesting_format.is_some() {
                     // Recursively add the toml_example_with_prefix of fields
                     // If nesting in a section way will attached to the bottom to avoid #18
                     // else the nesting will just using a prefix ahead the every field of example
@@ -747,7 +774,11 @@ impl Intermediate {
                 } else if let FieldKind::Map { .. } = field.kind {
                     field.push_doc_to_string(&mut nesting_field_example);
                     if let DefaultSource::DefaultValue(default) = &field.default {
-                        let table_body = inline_table_body(default, f);
+                        let table_body = if field.explicit_default {
+                            inline_table_body(default, f)
+                        } else {
+                            String::new()
+                        };
                         nesting_field_example.push_str("\"##.to_string()");
                         nesting_field_example.push_str(&format!(
                             " + &toml_example::format_table_example(\

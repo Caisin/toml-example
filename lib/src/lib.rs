@@ -110,7 +110,7 @@
 //! #[derive(TomlExample, Deserialize)]
 //! struct MainConfig {
 //!     #[serde(flatten)]
-//!     #[toml_example(nesting)]
+//!     #[toml_example(default = example, nesting)]
 //!     nested: HashMap<String, ConfigItem>,
 //! }
 //! #[derive(TomlExample, Deserialize)]
@@ -827,10 +827,7 @@ port = 0
         assert_eq!(
             Node::toml_example(),
             r#"# Services are running in the node
-# Service with specific port
-[services.example]
-# port should be a number
-port = 0
+[services]
 
 "#
         );
@@ -980,10 +977,7 @@ port = 0
         assert_eq!(
             Node::toml_example(),
             r#"# Services are running in the node
-# Service with specific port
-# [services.example]
-# port should be a number
-# port = 0
+# [services]
 
 "#
         );
@@ -1493,8 +1487,7 @@ a = ""
 a = ""
 
 # Instances doc
-[instance.example]
-a = ""
+[instance]
 
 "#
         );
