@@ -223,6 +223,33 @@ pub use toml_example_derive::TomlExample;
 pub mod traits;
 pub use traits::*;
 
+#[doc(hidden)]
+pub fn format_table_example(
+    label: &str,
+    prefix: &str,
+    field_name: &str,
+    body: &str,
+    optional: bool,
+) -> String {
+    let commented = optional || prefix.starts_with("# ");
+    let prefix = prefix.strip_prefix("# ").unwrap_or(prefix);
+    let label = if label.is_empty() {
+        format!("{prefix}{field_name}")
+    } else {
+        format!("{label}.{field_name}")
+    };
+    let line_prefix = if commented { "# " } else { "" };
+
+    let mut example = format!("{line_prefix}[{label}]\n");
+    for line in body.lines() {
+        example.push_str(line_prefix);
+        example.push_str(line);
+        example.push('\n');
+    }
+    example.push('\n');
+    example
+}
+
 #[cfg(test)]
 mod tests {
     use crate as toml_example;
@@ -1023,6 +1050,103 @@ port = 80
 "#
         );
         assert!(toml::from_str::<Node>(&Node::toml_example()).is_ok());
+    }
+
+    #[test]
+    fn hashmap_string_default_as_table() {
+        #[derive(TomlExample, Deserialize, PartialEq, Debug)]
+        struct Config {
+            /// Database alias map
+            #[toml_example(default = { base = "app", "pg.readonly" = "postgres_ro" })]
+            pub db_alias: HashMap<String, String>,
+            #[toml_example(default = 5432)]
+            pub port: usize,
+        }
+
+        let example = Config::toml_example();
+        assert_eq!(
+            example,
+            r#"port = 5432
+
+# Database alias map
+[db_alias]
+base = "app"
+"pg.readonly" = "postgres_ro"
+
+"#
+        );
+
+        let config = toml::from_str::<Config>(&example).unwrap();
+        assert_eq!(config.port, 5432);
+        assert_eq!(config.db_alias["base"], "app");
+        assert_eq!(config.db_alias["pg.readonly"], "postgres_ro");
+    }
+
+    #[test]
+    fn empty_hashmap_default_as_table() {
+        #[derive(TomlExample, Deserialize, PartialEq, Debug)]
+        struct Config {
+            #[toml_example(default = {})]
+            pub db_alias: HashMap<String, String>,
+            #[toml_example(default = "app")]
+            pub name: String,
+        }
+
+        let example = Config::toml_example();
+        assert_eq!(
+            example,
+            r#"name = "app"
+
+[db_alias]
+
+"#
+        );
+
+        let config = toml::from_str::<Config>(&example).unwrap();
+        assert_eq!(config.name, "app");
+        assert!(config.db_alias.is_empty());
+    }
+
+    #[test]
+    fn hashmap_without_default_as_empty_table() {
+        #[derive(TomlExample, Deserialize, PartialEq, Debug)]
+        struct Config {
+            pub db_alias: HashMap<String, String>,
+            #[toml_example(default = "app")]
+            pub name: String,
+        }
+
+        let example = Config::toml_example();
+        assert_eq!(
+            example,
+            r#"name = "app"
+
+[db_alias]
+
+"#
+        );
+
+        let config = toml::from_str::<Config>(&example).unwrap();
+        assert_eq!(config.name, "app");
+        assert!(config.db_alias.is_empty());
+    }
+
+    #[test]
+    fn optional_hashmap_default_as_commented_table() {
+        #[derive(TomlExample)]
+        #[allow(dead_code)]
+        struct Config {
+            #[toml_example(default = { base = "app" })]
+            pub db_alias: Option<HashMap<String, String>>,
+        }
+
+        assert_eq!(
+            Config::toml_example(),
+            r#"# [db_alias]
+# base = "app"
+
+"#
+        );
     }
 
     #[test]

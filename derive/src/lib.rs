@@ -40,6 +40,7 @@ struct AttrMeta {
 struct ParsedField {
     docs: Vec<String>,
     default: DefaultSource,
+    kind: FieldKind,
     nesting_format: Option<NestingFormat>,
     skip: bool,
     is_enum: bool,
@@ -139,6 +140,16 @@ impl ParsedField {
     }
 }
 
+#[derive(PartialEq)]
+enum FieldKind {
+    Scalar,
+    Vec,
+    Map {
+        key_ty: Option<String>,
+        value_ty: Option<String>,
+    },
+}
+
 #[derive(Debug)]
 enum DefaultSource {
     DefaultValue(String),
@@ -176,6 +187,7 @@ fn parse_type(
     default: &mut String,
     optional: &mut bool,
     nesting_format: &mut Option<NestingFormat>,
+    kind: &mut FieldKind,
 ) -> Option<String> {
     let mut r#type = None;
     if let Type::Path(TypePath { path, .. }) = ty {
@@ -191,10 +203,11 @@ fn parse_type(
                 }) = arguments
                 {
                     if let Some(GenericArgument::Type(ty)) = args.first() {
-                        r#type = parse_type(ty, default, &mut false, nesting_format);
+                        r#type = parse_type(ty, default, &mut false, nesting_format, kind);
                     }
                 }
             } else if id == "Vec" || id == "HashSet" || id == "BTreeSet" {
+                *kind = FieldKind::Vec;
                 if nesting_format.is_some() {
                     *nesting_format = Some(NestingFormat::Section(NestingType::Vec));
                 }
@@ -204,7 +217,14 @@ fn parse_type(
                 {
                     if let Some(GenericArgument::Type(ty)) = args.first() {
                         let mut item_default_value = String::new();
-                        r#type = parse_type(ty, &mut item_default_value, &mut false, &mut None);
+                        let mut item_kind = FieldKind::Scalar;
+                        r#type = parse_type(
+                            ty,
+                            &mut item_default_value,
+                            &mut false,
+                            &mut None,
+                            &mut item_kind,
+                        );
                         *default = if item_default_value.is_empty() {
                             "[  ]".to_string()
                         } else {
@@ -217,10 +237,28 @@ fn parse_type(
                     args, ..
                 }) = arguments
                 {
+                    let key_ty = args.first().and_then(|arg| match arg {
+                        GenericArgument::Type(ty) => type_to_string(ty),
+                        _ => None,
+                    });
                     if let Some(GenericArgument::Type(ty)) = args.last() {
                         let mut item_default_value = String::new();
-                        r#type = parse_type(ty, &mut item_default_value, &mut false, &mut None);
+                        let mut item_kind = FieldKind::Scalar;
+                        r#type = parse_type(
+                            ty,
+                            &mut item_default_value,
+                            &mut false,
+                            &mut None,
+                            &mut item_kind,
+                        );
                     }
+                    *kind = FieldKind::Map {
+                        key_ty,
+                        value_ty: r#type.clone(),
+                    };
+                }
+                if nesting_format.is_none() {
+                    *default = "{}".to_string();
                 }
                 if nesting_format.is_some() {
                     *nesting_format = Some(NestingFormat::Section(NestingType::Dict));
@@ -230,6 +268,14 @@ fn parse_type(
         }
     }
     r#type
+}
+
+fn type_to_string(ty: &Type) -> Option<String> {
+    if let Type::Path(TypePath { path, .. }) = ty {
+        Some(path.to_token_stream().to_string())
+    } else {
+        None
+    }
 }
 
 fn parse_attrs(attrs: &[Attribute]) -> AttrMeta {
@@ -370,6 +416,7 @@ fn parse_field(
 ) -> ParsedField {
     let mut default_value = String::new();
     let mut optional = false;
+    let mut kind = FieldKind::Scalar;
     let AttrMeta {
         docs,
         default_source,
@@ -386,6 +433,7 @@ fn parse_field(
         &mut default_value,
         &mut optional,
         &mut nesting_format,
+        &mut kind,
     );
     let default = match default_source {
         Some(DefaultSource::DefaultFn(_)) => DefaultSource::DefaultFn(ty.clone()),
@@ -399,9 +447,13 @@ fn parse_field(
     } else {
         abort!(&field, "The field should has name")
     };
+    if nesting_format.is_none() {
+        validate_default_source(field, &default, &kind, ty.as_deref());
+    }
     ParsedField {
         docs,
         default,
+        kind,
         nesting_format,
         skip,
         is_enum,
@@ -410,6 +462,141 @@ fn parse_field(
         optional: optional && !require,
         ty,
     }
+}
+
+fn validate_default_source(
+    field: &Field,
+    default: &DefaultSource,
+    kind: &FieldKind,
+    ty: Option<&str>,
+) {
+    let DefaultSource::DefaultValue(default) = default else {
+        return;
+    };
+
+    match kind {
+        FieldKind::Map { key_ty, value_ty } => {
+            if !is_string_ty(key_ty.as_deref()) {
+                abort!(
+                    field,
+                    "non-nesting HashMap/BTreeMap TOML examples require String keys"
+                )
+            }
+            if default.trim().is_empty() {
+                return;
+            }
+            let entries = parse_inline_table(default, field);
+            for (_, value) in entries {
+                validate_default_value(field, &value, value_ty.as_deref());
+            }
+        }
+        FieldKind::Vec => {
+            if !default.trim_start().starts_with('[') {
+                abort!(
+                    field,
+                    "default value for Vec/HashSet/BTreeSet fields must be a TOML array"
+                )
+            }
+        }
+        FieldKind::Scalar => validate_default_value(field, default, ty),
+    }
+}
+
+fn validate_default_value(field: &Field, value: &str, ty: Option<&str>) {
+    let value = value.trim();
+    let Some(ty) = ty.map(normalize_type) else {
+        return;
+    };
+
+    match ty.as_str() {
+        "String" | "str" => {
+            if !(value.starts_with('"') || value.starts_with('\'')) {
+                abort!(field, "default value for String fields must be quoted")
+            }
+        }
+        "bool" => {
+            if value != "true" && value != "false" {
+                abort!(field, "default value for bool fields must be true or false")
+            }
+        }
+        "usize" | "u8" | "u16" | "u32" | "u64" | "u128" => {
+            if value.replace('_', "").parse::<u128>().is_err() {
+                abort!(
+                    field,
+                    "default value for unsigned integer fields must be an unsigned integer"
+                )
+            }
+        }
+        "isize" | "i8" | "i16" | "i32" | "i64" | "i128" => {
+            if value.replace('_', "").parse::<i128>().is_err() {
+                abort!(
+                    field,
+                    "default value for signed integer fields must be a signed integer"
+                )
+            }
+        }
+        "f32" | "f64" if value.replace('_', "").parse::<f64>().is_err() => {
+            abort!(field, "default value for float fields must be a float")
+        }
+        _ => {}
+    }
+}
+
+fn normalize_type(ty: &str) -> String {
+    ty.replace(' ', "")
+        .rsplit("::")
+        .next()
+        .unwrap_or(ty)
+        .to_string()
+}
+
+fn is_string_ty(ty: Option<&str>) -> bool {
+    matches!(
+        ty.map(normalize_type).as_deref(),
+        Some("String") | Some("str")
+    )
+}
+
+fn parse_inline_table(default: &str, field: &Field) -> Vec<(String, String)> {
+    let default = default.trim();
+    if !(default.starts_with('{') && default.ends_with('}')) {
+        abort!(
+            field,
+            "default value for non-nesting HashMap/BTreeMap fields must be an inline TOML table"
+        )
+    }
+
+    let body = default
+        .strip_prefix('{')
+        .and_then(|s| s.strip_suffix('}'))
+        .unwrap_or(default)
+        .trim();
+    if body.is_empty() {
+        return Vec::new();
+    }
+
+    body.split(find_unenclosed_char(','))
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                return None;
+            }
+            let Some((key, value)) = entry.split_once(find_unenclosed_char('=')) else {
+                abort!(
+                    field,
+                    "inline TOML table default entries must use `key = value`"
+                )
+            };
+            Some((key.trim().to_string(), value.trim().to_string()))
+        })
+        .collect()
+}
+
+fn inline_table_body(default: &str, field: &Field) -> String {
+    parse_inline_table(default, field)
+        .into_iter()
+        .map(|(key, value)| format!("{key} = {value}\n"))
+        .collect()
 }
 
 fn push_doc_string(example: &mut String, docs: &[String]) {
@@ -556,6 +743,26 @@ impl Intermediate {
                         example.push_str(" + &r##\"");
                     } else {
                         abort!(&f.ident, "nesting only work on inner structure")
+                    }
+                } else if let FieldKind::Map { .. } = field.kind {
+                    field.push_doc_to_string(&mut nesting_field_example);
+                    if let DefaultSource::DefaultValue(default) = &field.default {
+                        let table_body = inline_table_body(default, f);
+                        nesting_field_example.push_str("\"##.to_string()");
+                        nesting_field_example.push_str(&format!(
+                            " + &toml_example::format_table_example(\
+                                label, prefix, \"{}\", r##\"{}\"##, {}\
+                            )",
+                            field.name.trim_start_matches("r#"),
+                            table_body,
+                            field.optional
+                        ));
+                        nesting_field_example.push_str(" + &r##\"");
+                    } else {
+                        abort!(
+                            &f.ident,
+                            "non-nesting HashMap/BTreeMap fields require a literal default"
+                        )
                     }
                 } else {
                     // The leaf field, writing down the example value based on different default source
