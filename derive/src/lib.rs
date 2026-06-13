@@ -4,7 +4,7 @@ use proc_macro2::Ident;
 use proc_macro2::TokenStream;
 use proc_macro_error2::OptionExt;
 use proc_macro_error2::{abort, proc_macro_error};
-use quote::quote;
+use quote::{quote, ToTokens};
 use syn::{
     AngleBracketedGenericArguments,
     AttrStyle::Outer,
@@ -182,7 +182,7 @@ fn parse_type(
         if let Some(PathSegment { ident, arguments }) = path.segments.last() {
             let id = ident.to_string();
             if arguments.is_none() {
-                r#type = Some(id.clone());
+                r#type = Some(path.to_token_stream().to_string());
                 *default = default_value(id);
             } else if id == "Option" {
                 *optional = true;

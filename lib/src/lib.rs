@@ -256,7 +256,7 @@ b = ""
         );
         let mut tmp_file = std::env::temp_dir();
         tmp_file.push("config.toml");
-        Config::to_toml_example(&tmp_file.as_path().to_str().unwrap()).unwrap();
+        Config::to_toml_example(tmp_file.as_path().to_str().unwrap()).unwrap();
         assert_eq!(
             std::fs::read_to_string(tmp_file).unwrap(),
             r#"# Config.a should be a number
@@ -639,6 +639,44 @@ inner = ""
             Outer::toml_example(),
             r#"# Outer.inner is a complex struct
 # Inner is a config live in Outer
+[inner]
+# Inner.a should be a number
+a = 0
+
+"#
+        );
+        assert_eq!(
+            toml::from_str::<Outer>(&Outer::toml_example()).unwrap(),
+            Outer::default()
+        );
+    }
+
+    #[test]
+    fn nesting_with_qualified_type_path() {
+        mod nested {
+            use super::*;
+
+            /// Inner is declared in another module
+            #[derive(TomlExample, Deserialize, Default, PartialEq, Debug)]
+            #[allow(dead_code)]
+            pub struct Inner {
+                /// Inner.a should be a number
+                pub a: usize,
+            }
+        }
+
+        #[derive(TomlExample, Deserialize, Default, PartialEq, Debug)]
+        #[allow(dead_code)]
+        struct Outer {
+            /// Outer.inner is a complex struct
+            #[toml_example(nesting)]
+            inner: nested::Inner,
+        }
+
+        assert_eq!(
+            Outer::toml_example(),
+            r#"# Outer.inner is a complex struct
+# Inner is declared in another module
 [inner]
 # Inner.a should be a number
 a = 0
